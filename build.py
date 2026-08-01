@@ -117,10 +117,38 @@ def _ingest(stack, series, path, stamps, fields, overwrite):
     ds.close()
 
 
+def _leads(run, first_time, last_time):
+    """Zakres leadtime_hour pokrywajacy zadany przedzial czasu."""
+    first = max(0, int((first_time - run).total_seconds() // 3600))
+    last = int((last_time - run).total_seconds() // 3600)
+    if last < first or first > 96:
+        return []
+    return list(range(first, min(96, last) + 1))
+
+
 def download(stack, series, now, run_start):
-    """Prognoza z biezacego przebiegu, potem analiza za wczorajsza dobe."""
+    """Trzy zrodla, kazde nadpisuje poprzednie tam, gdzie ma lepsze dane:
+    poprzedni przebieg (godziny sprzed biezacego), biezacy przebieg, analiza."""
     import cams
     tmp = tempfile.gettempdir()
+
+    # 1. Poprzedni przebieg - bez niego poranne uruchomienia mialyby urwana
+    #    historie, bo biezacy przebieg zaczyna sie dopiero o polnocy.
+    if series[0] < run_start:
+        prev_run = run_start - dt.timedelta(days=1)
+        leads = _leads(prev_run, series[0], run_start - dt.timedelta(hours=1))
+        if leads:
+            stamps = [prev_run + dt.timedelta(hours=h) for h in leads]
+            ads_names = [n for n, (f, _) in cams.VARIABLES.items() if f in POLLUTANTS]
+            print("historia: przebieg %s, leadtime %d..%d"
+                  % (prev_run.date(), leads[0], leads[-1]))
+            try:
+                path = os.path.join(tmp, "cams_prev.zip")
+                cams.request_hours(path, "forecast", prev_run.strftime("%Y-%m-%d"),
+                                   ["00:00"], [str(h) for h in leads], ads_names)
+                _ingest(stack, series, path, stamps, POLLUTANTS, overwrite=True)
+            except Exception as exc:
+                print("historia niedostepna (%s)" % exc)
 
     first_lead = max(0, int((series[0] - run_start).total_seconds() // 3600))
     last_lead = int((series[-1] - run_start).total_seconds() // 3600)
@@ -135,6 +163,8 @@ def download(stack, series, now, run_start):
     _ingest(stack, series, path, stamps, ALL_FIELDS, overwrite=True)
 
     # Analiza obejmuje tylko zanieczyszczenia - pylkow do srednich nie liczymy.
+    # Bywa niedostepna: CAMS publikuje ja okolo poludnia dnia nastepnego, wiec
+    # poranne przebiegi dostana 400 i zostana przy prognozie. To jest w porzadku.
     day = (now - dt.timedelta(days=1)).date()
     an_start = dt.datetime(day.year, day.month, day.day, tzinfo=dt.timezone.utc)
     times = ["%02d:00" % h for h in range(24)]
