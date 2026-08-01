@@ -59,30 +59,36 @@ def european_aqi(pm25_24h, pm10_24h, no2, o3, so2):
     return np.fmax.reduce(parts)
 
 
-def _us_subindex(conc, table):
+def _us_subindex(conc, table, step):
+    """Podindeks EPA. Stezenie jest najpierw obcinane do rozdzielczosci tablicy
+    (PM2.5 do 0,1 ug/m3, reszta do jednostki), bo miedzy pasmami sa szczeliny:
+    granice ida 12,0 / 12,1 i 54 / 55. Bez obcinania wartosc z takiej szczeliny
+    nie trafia do zadnego pasma i po cichu wypada z maksimum."""
+    trunc = np.floor(conc / step) * step
     out = np.full(conc.shape, np.nan, dtype=np.float32)
     for lo_c, hi_c, lo_i, hi_i in table:
-        m = (conc >= lo_c) & (conc <= hi_c)
+        m = (trunc >= lo_c) & (trunc <= hi_c)
         if not np.any(m):
             continue
         span = (hi_c - lo_c) if hi_c > lo_c else 1.0
-        out[m] = lo_i + (hi_i - lo_i) * (conc[m] - lo_c) / span
+        out[m] = lo_i + (hi_i - lo_i) * (trunc[m] - lo_c) / span
     # powyzej ostatniego progu przypinamy gorny indeks
     top_c, top_i = table[-1][1], table[-1][3]
-    out = np.where(conc > top_c, float(top_i), out)
+    out = np.where(trunc > top_c, float(top_i), out)
     return np.where(np.isnan(conc), np.nan, out)
 
 
-def us_aqi(pm25_24h, pm10_24h, o3_8h, no2, so2):
+def us_aqi(pm25_24h, pm10_24h, o3_8h, no2, so2, parts=False):
     """US EPA AQI jako maksimum podindeksow. Wejscia w ug/m3."""
-    parts = [
-        _us_subindex(pm25_24h, US_BREAKS["pm2_5"]),
-        _us_subindex(pm10_24h, US_BREAKS["pm10"]),
-        _us_subindex(o3_8h * UG_TO_PPB["o3"], US_BREAKS["o3"]),
-        _us_subindex(no2 * UG_TO_PPB["no2"], US_BREAKS["no2"]),
-        _us_subindex(so2 * UG_TO_PPB["so2"], US_BREAKS["so2"]),
-    ]
-    return np.fmax.reduce(parts)
+    sub = {
+        "pm2_5": _us_subindex(pm25_24h, US_BREAKS["pm2_5"], 0.1),
+        "pm10": _us_subindex(pm10_24h, US_BREAKS["pm10"], 1.0),
+        "o3": _us_subindex(o3_8h * UG_TO_PPB["o3"], US_BREAKS["o3"], 1.0),
+        "no2": _us_subindex(no2 * UG_TO_PPB["no2"], US_BREAKS["no2"], 1.0),
+        "so2": _us_subindex(so2 * UG_TO_PPB["so2"], US_BREAKS["so2"], 1.0),
+    }
+    total = np.fmax.reduce(list(sub.values()))
+    return (total, sub) if parts else total
 
 
 def trailing_mean(stack, end_idx, hours):

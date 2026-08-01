@@ -50,6 +50,14 @@ check("ozon 100 ug/m3 (50,9 ppb) daje indeks okolo 47",
       44 <= scalar(aqi.us_aqi(z, z, np.full((1, 1), 100.0), z, z)) <= 50)
 check("ozon 140 ug/m3 (71,3 ppb) przechodzi w trzecie pasmo",
       101 <= scalar(aqi.us_aqi(z, z, np.full((1, 1), 140.0), z, z)) <= 110)
+# miedzy pasmami EPA sa szczeliny (12,0 / 12,1); bez obcinania stezenia
+# wartosc ze szczeliny dawala NaN i po cichu wypadala z maksimum
+for gap in (12.05, 35.45, 55.45):
+    v = scalar(aqi.us_aqi(np.full((1, 1), gap), z, z, z, z))
+    check("PM2.5 %.2f (szczelina miedzy pasmami) daje liczbe, nie NaN" % gap,
+          v == v and v > 0, "dostalem %s" % v)
+check("ozon 108 ug/m3 (54,x ppb, szczelina) daje liczbe",
+      scalar(aqi.us_aqi(z, z, np.full((1, 1), 108.0), z, z)) > 0)
 
 print("srednia kroczaca")
 stack = np.arange(48, dtype=np.float32).reshape(48, 1, 1)

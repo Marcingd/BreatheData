@@ -204,6 +204,27 @@ def build_hour(stack, idx):
     return layers
 
 
+def probe(stack, idx, lat, lon):
+    """Rozbicie indeksow w jednym punkcie - do porownania z pomiarem naziemnym."""
+    r = int(round((lat - grid.LAT0) / grid.STEP))
+    c = int(round((lon - grid.LON0) / grid.STEP))
+    if r < 0 or r >= grid.NLAT or c < 0 or c >= grid.NLON:
+        return
+    cell = lambda a: float(a[idx, r, c])
+    pm25_24 = float(aqi.trailing_mean(stack["pm2_5"], idx, 24)[r, c])
+    pm10_24 = float(aqi.trailing_mean(stack["pm10"], idx, 24)[r, c])
+    o3_8 = float(aqi.trailing_mean(stack["o3"], idx, 8)[r, c])
+    print("sonda %.3f/%.3f: pm2.5 %.1f (24h %.1f) | pm10 %.1f (24h %.1f) | o3 %.1f (8h %.1f)"
+          % (lat, lon, cell(stack["pm2_5"]), pm25_24, cell(stack["pm10"]), pm10_24,
+             cell(stack["o3"]), o3_8))
+    one = lambda v: np.full((1, 1), v, dtype=np.float32)
+    total, sub = aqi.us_aqi(one(pm25_24), one(pm10_24), one(o3_8),
+                            one(cell(stack["no2"])), one(cell(stack["so2"])), parts=True)
+    print("  US AQI %.0f = max(%s)"
+          % (float(total[0, 0]), ", ".join("%s %.0f" % (k, float(v[0, 0]))
+                                           for k, v in sub.items())))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--synthetic", action="store_true", help="bez ADS, dane zastepcze")
@@ -235,6 +256,9 @@ def main():
     have = int(np.sum(np.isfinite(stack["pm2_5"][:publish_idx[0] + 1, grid.NLAT // 2,
                                                  grid.NLON // 2])))
     print("historia PM pod pierwsza publikowana godzina: %d/%d h" % (have, HISTORY_HOURS))
+
+    # kontrolka na Skierniewicach - pozwala porownac skladniki z pomiarem GIOS
+    probe(stack, publish_idx[0], 51.955, 20.15)
 
     sink = None
     if not args.out:
