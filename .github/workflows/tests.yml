@@ -1,0 +1,29 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - run: pip install numpy
+
+      - name: Indeksy i format siatki
+        run: python tests/test_pipeline.py
+
+      - name: Zgodnosc dekodera workera z koderem
+        run: node worker/test/decode.test.mjs
+
+      - name: Pelny przebieg na danych zastepczych
+        run: python build.py --synthetic --out out --now 2026-08-01T14
+
+      - name: Ksztalt odpowiedzi dla zegarka
+        run: node worker/test/worker.test.mjs

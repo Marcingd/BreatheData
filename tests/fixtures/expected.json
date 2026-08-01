@@ -1,0 +1,70 @@
+[
+  {
+    "lat": 52.25,
+    "lon": 21.0,
+    "cell": {
+      "time": 1785355200,
+      "european_aqi": 42.0,
+      "us_aqi": 88.0,
+      "pm2_5": 16.0,
+      "pm10": 21.8,
+      "alder_pollen": 0.0,
+      "birch_pollen": 0.0,
+      "grass_pollen": 18.3,
+      "mugwort_pollen": 189.6,
+      "olive_pollen": 0.0,
+      "ragweed_pollen": 0.0
+    }
+  },
+  {
+    "lat": 30.0,
+    "lon": -25.0,
+    "cell": {
+      "time": 1785355200,
+      "european_aqi": 42.0,
+      "us_aqi": 88.0,
+      "pm2_5": 16.0,
+      "pm10": 21.8,
+      "alder_pollen": 0.0,
+      "birch_pollen": 0.0,
+      "grass_pollen": 18.3,
+      "mugwort_pollen": 189.6,
+      "olive_pollen": 0.0,
+      "ragweed_pollen": 0.0
+    }
+  },
+  {
+    "lat": 72.0,
+    "lon": 45.0,
+    "cell": {
+      "time": 1785355200,
+      "european_aqi": 42.0,
+      "us_aqi": 88.0,
+      "pm2_5": 16.0,
+      "pm10": 21.8,
+      "alder_pollen": 0.0,
+      "birch_pollen": 0.0,
+      "grass_pollen": 18.3,
+      "mugwort_pollen": 189.6,
+      "olive_pollen": 0.0,
+      "ragweed_pollen": 0.0
+    }
+  },
+  {
+    "lat": 48.5,
+    "lon": 2.25,
+    "cell": {
+      "time": 1785355200,
+      "european_aqi": 42.0,
+      "us_aqi": 88.0,
+      "pm2_5": 16.0,
+      "pm10": 21.8,
+      "alder_pollen": 0.0,
+      "birch_pollen": 0.0,
+      "grass_pollen": 18.3,
+      "mugwort_pollen": 189.6,
+      "olive_pollen": 0.0,
+      "ragweed_pollen": 0.0
+    }
+  }
+]

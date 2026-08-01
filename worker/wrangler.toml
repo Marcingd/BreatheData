@@ -1,0 +1,8 @@
+name = "breathe-data"
+main = "src/index.js"
+compatibility_date = "2026-01-01"
+
+# ID powstaje przy `wrangler kv namespace create GRID` i trzeba je tu wkleic.
+[[kv_namespaces]]
+binding = "GRID"
+id = "61dde151163e459d990dc21e7b2c33da"

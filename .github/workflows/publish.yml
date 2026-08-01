@@ -1,0 +1,42 @@
+name: publish CAMS grids
+
+# Przebieg 00 UTC modelu CAMS jest dostepny okolo 08 UTC, wiec pierwsze
+# odswiezenie idzie po 09 UTC. Kazdy przebieg publikuje 12 kolejnych godzin,
+# co daje zapas nawet gdy jeden termin przepadnie.
+on:
+  schedule:
+    - cron: '20 9,15,21,3 * * *'
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Instalacja zaleznosci
+        run: pip install -r requirements.txt
+
+      - name: Testy jednostkowe
+        run: python tests/test_pipeline.py
+
+      - name: Testy dekodera workera
+        run: node worker/test/decode.test.mjs
+
+      - name: Konfiguracja dostepu do ADS
+        run: |
+          umask 077
+          printf 'url: https://ads.atmosphere.copernicus.eu/api\nkey: %s\n' \
+            "${{ secrets.ADS_KEY }}" > "$HOME/.cdsapirc"
+
+      - name: Pobranie i publikacja siatek
+        env:
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_KV_NAMESPACE_ID: ${{ secrets.CF_KV_NAMESPACE_ID }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+        run: python build.py

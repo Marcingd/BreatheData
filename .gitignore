@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+out/
+*.zip
+*.nc
+worker/node_modules/
+worker/.wrangler/
+.cdsapirc
