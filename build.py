@@ -3,10 +3,14 @@
 
   ADS (CAMS Europe)  ->  indeksy i pylki na siatce 0,25 stopnia  ->  Cloudflare KV
 
-Jedno zadanie do ADS obejmuje okno [teraz - 24 h, teraz + PUBLISH_HOURS], bo
-srednia 24-godzinna dla pylow zawieszonych potrzebuje przeszlosci, a publikujemy
-kilkanascie godzin do przodu, zeby zegarek zawsze trafil na aktualna godzine
-nawet miedzy przebiegami.
+Szereg godzinowy powstaje z dwoch zrodel:
+  * ANALIZA za wczorajsza dobe - najlepsze odtworzenie przeszlosci, potrzebne
+    do sredniej 24-godzinnej PM, na ktorej stoi europejski indeks i US AQI,
+  * PROGNOZA z ostatniego dostepnego przebiegu 00 UTC - godziny biezaca i przyszle.
+Analiza nadpisuje prognoze tam, gdzie obie pokrywaja te sama godzine.
+
+Bez tego srednia 24 h liczyla sie z prognozy o duzym wyprzedzeniu i zanizala
+US AQI o kilka punktow (sprawdzone wobec pomiarow GIOS w Zyrardowie).
 
 Uzycie:
     python build.py                 # pelny przebieg (wymaga kluczy w srodowisku)
@@ -33,6 +37,11 @@ RUN_READY_HOUR = 9          # o tej godzinie UTC przebieg 00 UTC jest juz opubli
 KEY_PREFIX = "grid:"
 INDEX_KEY = "index"
 
+POLLUTANTS = ["pm2_5", "pm10", "no2", "o3", "so2"]
+POLLEN = ["alder_pollen", "birch_pollen", "grass_pollen",
+          "mugwort_pollen", "olive_pollen", "ragweed_pollen"]
+ALL_FIELDS = POLLUTANTS + POLLEN
+
 
 def pick_run(now):
     """Data przebiegu modelu 00 UTC, ktory na pewno jest juz dostepny."""
@@ -40,58 +49,109 @@ def pick_run(now):
     return dt.datetime(day.year, day.month, day.day, tzinfo=dt.timezone.utc)
 
 
-def leadtime_window(run_start, now):
-    """Zakres leadtime_hour pokrywajacy historie i publikowane godziny."""
-    first = int((now - run_start).total_seconds() // 3600) - HISTORY_HOURS + 1
-    last = int((now - run_start).total_seconds() // 3600) + PUBLISH_HOURS - 1
-    first = max(0, first)
-    last = min(96, max(last, first))
-    return list(range(first, last + 1))
+def hour_series(now):
+    """Godziny, dla ktorych trzymamy dane: historia + publikowane."""
+    first = now - dt.timedelta(hours=HISTORY_HOURS - 1)
+    last = now + dt.timedelta(hours=PUBLISH_HOURS - 1)
+    out = []
+    t = first
+    while t <= last:
+        out.append(t)
+        t += dt.timedelta(hours=1)
+    return out
 
 
-def synthetic_stack(hours):
+def empty_stack(n):
+    return {f: np.full((n, grid.NLAT, grid.NLON), np.nan, dtype=np.float32)
+            for f in ALL_FIELDS}
+
+
+def synthetic_stack(series):
     """Powtarzalne dane zastepcze - gradient plus dobowy oddech, bez losowosci."""
     lats, lons = grid.target_axes()
     la = lats[:, None]
     lo = lons[None, :]
     base = 8.0 + 14.0 * np.exp(-((la - 51.0) ** 2) / 120.0 - ((lo - 18.0) ** 2) / 400.0)
-    out = {}
+    stack = {}
     for name, mult in (("pm2_5", 1.0), ("pm10", 1.7), ("no2", 2.2), ("o3", 3.4), ("so2", 0.8)):
-        out[name] = np.stack([base * mult * (1.0 + 0.25 * np.sin((h % 24) / 3.8))
-                              for h in range(hours)]).astype(np.float32)
-    for i, name in enumerate(["alder_pollen", "birch_pollen", "grass_pollen",
-                              "mugwort_pollen", "olive_pollen", "ragweed_pollen"]):
+        stack[name] = np.stack([base * mult * (1.0 + 0.25 * np.sin(i / 3.8))
+                                for i in range(len(series))]).astype(np.float32)
+    for i, name in enumerate(POLLEN):
         peak = 4.0 + 60.0 * i
-        out[name] = np.stack([np.clip(base - 6.0, 0, None) * peak / 12.0
-                              for _ in range(hours)]).astype(np.float32)
-    return out
+        stack[name] = np.stack([np.clip(base - 6.0, 0, None) * peak / 12.0
+                                for _ in series]).astype(np.float32)
+    return stack
 
 
-def download_stack(run_start, leadtimes):
-    """Pobranie z ADS i przerzedzenie do siatki docelowej."""
+def _ingest(stack, series, path, stamps, fields, overwrite):
+    """Wczytanie pliku CAMS do szeregu; stamps to czasy kolejnych krokow w pliku."""
     import cams
-    tmp = os.path.join(tempfile.gettempdir(), "cams_%s.zip" % run_start.strftime("%Y%m%d"))
-    cams.request_hours(
-        tmp, "forecast",
-        run_start.strftime("%Y-%m-%d"),
-        ["00:00"],
-        [str(h) for h in leadtimes],
-        list(cams.VARIABLES.keys()),
-    )
-    ds = cams.open_netcdf(tmp)
+    ds = cams.open_netcdf(path)
     src_lat, src_lon, lat_order, lon_order = cams.axes(ds)
     dst_lat, dst_lon = grid.target_axes()
-    print("zrodlo: lat %.2f..%.2f (%d), lon %.2f..%.2f (%d)"
+    print("  zrodlo: lat %.2f..%.2f (%d), lon %.2f..%.2f (%d)"
           % (src_lat[0], src_lat[-1], len(src_lat), src_lon[0], src_lon[-1], len(src_lon)))
 
-    stack = {}
-    for _, (field, fragments) in cams.VARIABLES.items():
+    slot = {t: i for i, t in enumerate(series)}
+    for ads_name, (field, fragments) in cams.VARIABLES.items():
+        if field not in fields:
+            continue
         var = cams.find_var(ds, fragments)
         a = cams.read_layer(ds, var, lat_order, lon_order)
-        stack[field] = cams.resample(a, src_lat, src_lon, dst_lat, dst_lon)
-        print("  %-16s <- %-14s %s" % (field, var, stack[field].shape))
+        a = cams.resample(a, src_lat, src_lon, dst_lat, dst_lon)
+        if a.shape[0] != len(stamps):
+            raise RuntimeError("%s: %d krokow w pliku, oczekiwano %d"
+                               % (field, a.shape[0], len(stamps)))
+        used = 0
+        for k, t in enumerate(stamps):
+            i = slot.get(t)
+            if i is None:
+                continue
+            if overwrite:
+                stack[field][i] = a[k]
+            else:
+                gap = np.isnan(stack[field][i])
+                stack[field][i][gap] = a[k][gap]
+            used += 1
+        print("    %-16s <- %-14s %d/%d krokow" % (field, var, used, len(stamps)))
     ds.close()
-    return stack
+
+
+def download(stack, series, now, run_start):
+    """Prognoza z biezacego przebiegu, potem analiza za wczorajsza dobe."""
+    import cams
+    tmp = tempfile.gettempdir()
+
+    first_lead = max(0, int((series[0] - run_start).total_seconds() // 3600))
+    last_lead = int((series[-1] - run_start).total_seconds() // 3600)
+    last_lead = min(96, max(last_lead, first_lead))
+    leads = list(range(first_lead, last_lead + 1))
+    stamps = [run_start + dt.timedelta(hours=h) for h in leads]
+
+    print("prognoza: przebieg %s, leadtime %d..%d" % (run_start.date(), leads[0], leads[-1]))
+    path = os.path.join(tmp, "cams_fc.zip")
+    cams.request_hours(path, "forecast", run_start.strftime("%Y-%m-%d"), ["00:00"],
+                       [str(h) for h in leads], list(cams.VARIABLES.keys()))
+    _ingest(stack, series, path, stamps, ALL_FIELDS, overwrite=True)
+
+    # Analiza obejmuje tylko zanieczyszczenia - pylkow do srednich nie liczymy.
+    day = (now - dt.timedelta(days=1)).date()
+    an_start = dt.datetime(day.year, day.month, day.day, tzinfo=dt.timezone.utc)
+    times = ["%02d:00" % h for h in range(24)]
+    an_stamps = [an_start + dt.timedelta(hours=h) for h in range(24)]
+    if not any(t in series for t in an_stamps):
+        print("analiza: pominieta, okno jej nie obejmuje")
+        return
+    ads_names = [n for n, (f, _) in cams.VARIABLES.items() if f in POLLUTANTS]
+    print("analiza: %s, 24 godziny" % day)
+    try:
+        path = os.path.join(tmp, "cams_an.zip")
+        cams.request_hours(path, "analysis", an_start.strftime("%Y-%m-%d"), times,
+                           ["0"], ads_names)
+        _ingest(stack, series, path, an_stamps, POLLUTANTS, overwrite=True)
+    except Exception as exc:
+        # brak analizy nie moze wywalic publikacji - zostaje sama prognoza
+        print("analiza niedostepna (%s), zostaje prognoza" % exc)
 
 
 def build_hour(stack, idx):
@@ -109,8 +169,7 @@ def build_hour(stack, idx):
         "pm2_5": stack["pm2_5"][idx],
         "pm10": stack["pm10"][idx],
     }
-    for name in ["alder_pollen", "birch_pollen", "grass_pollen",
-                 "mugwort_pollen", "olive_pollen", "ragweed_pollen"]:
+    for name in POLLEN:
         layers[name] = stack[name][idx]
     return layers
 
@@ -128,19 +187,24 @@ def main():
         now = dt.datetime.now(dt.timezone.utc).replace(minute=0, second=0, microsecond=0)
 
     run_start = pick_run(now)
-    leadtimes = leadtime_window(run_start, now)
-    print("teraz %s | przebieg %s | leadtime %d..%d"
-          % (now.isoformat(), run_start.date(), leadtimes[0], leadtimes[-1]))
+    series = hour_series(now)
+    print("teraz %s | szereg %s .. %s (%d h)"
+          % (now.isoformat(), series[0].isoformat(), series[-1].isoformat(), len(series)))
 
     if args.synthetic:
-        stack = synthetic_stack(len(leadtimes))
+        stack = synthetic_stack(series)
     else:
-        stack = download_stack(run_start, leadtimes)
+        stack = empty_stack(len(series))
+        download(stack, series, now, run_start)
 
-    hours = [run_start + dt.timedelta(hours=h) for h in leadtimes]
-    publish_idx = [i for i, h in enumerate(hours) if h >= now][:PUBLISH_HOURS]
+    publish_idx = [i for i, t in enumerate(series) if t >= now][:PUBLISH_HOURS]
     if not publish_idx:
         raise RuntimeError("okno nie zawiera zadnej godziny do publikacji")
+
+    # ile godzin historii faktycznie mamy pod pierwsza publikowana godzina
+    have = int(np.sum(np.isfinite(stack["pm2_5"][:publish_idx[0] + 1, grid.NLAT // 2,
+                                                 grid.NLON // 2])))
+    print("historia PM pod pierwsza publikowana godzina: %d/%d h" % (have, HISTORY_HOURS))
 
     sink = None
     if not args.out:
@@ -151,7 +215,7 @@ def main():
 
     keys = []
     for i in publish_idx:
-        stamp = hours[i]
+        stamp = series[i]
         key = KEY_PREFIX + stamp.strftime("%Y%m%d%H")
         blob = grid.encode(build_hour(stack, i), stamp.timestamp())
         if sink:
